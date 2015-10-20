@@ -7,79 +7,112 @@
  - (C) Copyright 2015 MadsenSoft, madsensoft.dk
 --]]
 
-local ffi = require "ffi"
-local S = require "syscall"
-local C = ffi.C
+local ffi   = require "ffi"
+local S     = require "syscall"
+local lfs   = require "syscall.lfs"
+local c2str = ffi.string
+local t     = S.t
+local C     = ffi.C
+local errno = ffi.errno
 
-return {
+-- used for char pointer returns, NULL is failure
+local function retchp(ret, err)
+  if ret == nil then return nil, t.error(err or errno()) end
+  return c2str(ret)
+-- used for int returns, NULL is failure
+local function retbool(ret, err)
+  if ret < 0 then return nil, t.error(err or errno()) end
+  return true
+end
+
+local tmeta = { __index = table }
+local function tnew(t) return setmetatable(t or {}, tmeta) end
+
+ffi.cdef [[
+   char * ttyname(int fildes);
+   int execvp(const char *file, char *const argv[]);
+]]
+
+local M
+M = {
 
 ---
 -- Check access permissions of a file or pathname
-access = S.access -- function(path, mode) 
+access = S.access, -- (path, mode) 
 
 ---
 -- Change current working directory
-chdir = S.chdir -- chdir(path)
+chdir = S.chdir -- (path)
 
 ---
---
---
-chmod        = function() 
-end
+-- Change file modes
+chmod        = S.chmod, -- (path, mode)
 
 ---
---
---
-chown        = function() 
-end
+-- Change owner and group of a file
+chown        = S.chown, -- (path, owner, group)
 
 ---
---
---
+-- Get name of associated terminal (tty) from file descriptor
+ttyname      = function(fd) 
+   return retchp(C.ttyname(tonumber(fd or 0)))
+end,
+
+---
+-- Get name of associated terminal
 ctermid      = function() 
-end
+   return M.ttyname(0)
+end,
 
 ---
---
---
-dir          = function() 
-end
+-- List contents of directory
+dir          = function(path) 
+   local ret = tnew {}
+   for d in lfs.dir(path or ".") do
+      ret:insert(d)
+   end
+   return ret
+end,
 
 ---
---
---
+-- List contents of directory
+files        = function(path) 
+   return lfs.dir(path or ".")
+end,
+
+---
+-- Get error string and number
 errno        = function() 
-end
+   return t.error(errno()), errno()
+end,
 
 ---
---
---
-exec         = function() 
-end
+-- Execute a file
+exec         = function(path, arg1, ...) 
+   assert(type(path) == "string")
+   local a
+   if type(arg1) == 'table' then
+      a = tnew {path, expand(arg1)}
+   else
+      a = tnew {path, arg1, ...}
+   end
+   for _,s in ipairs(a) do assert(type(s) == 'string') end
+   local cargv = t.string_array(#a + 1, a or {})
+   cargv[#a] = nil -- LuaJIT does not zero rest of a VLA
+   return retbool(C.execve(filename, cargv, cenvp))
+end,
 
 ---
---
---
-files        = function() 
-end
+-- Create a new process
+fork         = C.fork, -- ()
 
 ---
---
---
-fork         = function() 
-end
+-- Get working directory pathname
+getcwd       = lfs.currentdir, -- ()
 
 ---
---
---
-getcwd       = function() 
-end
-
----
---
---
-getenv       = function() 
-end
+-- Get environment variable
+getenv       = S.getenv, -- (var)
 
 ---
 --
@@ -198,12 +231,6 @@ end
 ---
 --
 --
-ttyname      = function() 
-end
-
----
---
---
 umask        = function() 
 end
 
@@ -314,9 +341,7 @@ end
 --
 setpgid      = function() 
 end
-
-
-ULL,			NULL}
-};
+}
+return M
 
 -- vim: set sw=3 sts=3 et:
