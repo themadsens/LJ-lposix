@@ -17,20 +17,82 @@ local errno = ffi.errno
 
 -- used for char pointer returns, NULL is failure
 local function retchp(ret, err)
-  if ret == nil then return nil, t.error(err or errno()) end
-  return c2str(ret)
+   if ret == nil then return nil, strerr(err or errno()) end
+   return c2str(ret)
+end
+
 -- used for int returns, NULL is failure
 local function retbool(ret, err)
-  if ret < 0 then return nil, t.error(err or errno()) end
-  return true
+   if ret < 0 then return nil, strerr(err or errno()) end
+   return true
+end
+
+-- used for int returns, NULL is failure
+local function retnum(ret, err)
+   ret  = tonumber(ret) or -1
+   if ret < 0 then return nil, strerr(err or errno()) end
+   return ret
 end
 
 local tmeta = { __index = table }
 local function tnew(t) return setmetatable(t or {}, tmeta) end
 
+local function strerr(e)
+   local str = t.error(e)
+   return type(str) == "string" and str or ""
+end
+
+local function str_array(sp, n)
+   local n = n or 0
+   if sp[n] == nil then return end
+   return c2str(sp[n]), str_array(sp, n+1)
+end
+
+
+ffi.cdef( ffi.os == "OSX" and [[
+   struct passwd {
+       char    *pw_name;       /* user name */
+       char    *pw_passwd;     /* encrypted password */
+       uid_t   pw_uid;         /* user uid */
+       gid_t   pw_gid;         /* user gid */
+       time_t  pw_change;      /* password change time */
+       char    *pw_class;      /* user access class */
+       char    *pw_gecos;      /* Honeywell login info */
+       char    *pw_dir;        /* home directory */
+       char    *pw_shell;      /* default shell */
+       time_t  pw_expire;      /* account expiration */
+       int     pw_fields;      /* internal: fields filled in */
+    };
+]] or [[
+   struct passwd {
+       char    *pw_name;       /* user name */
+       char    *pw_passwd;     /* encrypted password */
+       uid_t   pw_uid;         /* user uid */
+       gid_t   pw_gid;         /* user gid */
+       char    *pw_gecos;      /* Honeywell login info */
+       char    *pw_dir;        /* home directory */
+       char    *pw_shell;      /* default shell */
+    };
+]])
+
 ffi.cdef [[
    char * ttyname(int fildes);
+
    int execvp(const char *file, char *const argv[]);
+
+   struct group {
+      char    *gr_name;
+      char    *gr_passwd;
+      gid_t   gr_gid;
+      char    **gr_mem;
+   };
+   int getgrnam_r(const char *name, struct group *grp, char *buffer, size_t bufsize, struct group **result);
+   int getgrgid_r(gid_t gid, struct group *grp, char *buffer, size_t bufsize, struct group **result);
+   
+   char *getlogin(void);
+    int getpwnam_r(const char *name, struct passwd *pwd, char *buffer, size_t bufsize, struct passwd **result);
+    int getpwuid_r(uid_t uid, struct passwd *pwd, char *buffer, size_t bufsize, struct passwd **result);
+
 ]]
 
 local M
@@ -42,7 +104,7 @@ access = S.access, -- (path, mode)
 
 ---
 -- Change current working directory
-chdir = S.chdir -- (path)
+chdir = S.chdir, -- (path)
 
 ---
 -- Change file modes
@@ -83,7 +145,7 @@ end,
 ---
 -- Get error string and number
 errno        = function() 
-   return t.error(errno()), errno()
+   return strerr(errno()), errno()
 end,
 
 ---
@@ -104,7 +166,7 @@ end,
 
 ---
 -- Create a new process
-fork         = C.fork, -- ()
+fork         = S.fork, -- ()
 
 ---
 -- Get working directory pathname
@@ -115,232 +177,271 @@ getcwd       = lfs.currentdir, -- ()
 getenv       = S.getenv, -- (var)
 
 ---
---
---
-getgroup     = function() 
-end
+-- Group database operations
+getgroup     = function(g) 
+   local e
+   local c = ffi.new("char[1024]"); 
+   local r = ffi.new("struct group")  
+   local rp = ffi.new("struct group*[1]", r)  
+   errno(0)
+   if type(g) == 'string' then
+      e = C.getgrnam_r(g, r, c, 1024, rp)
+   elseif type(g) == 'number' then
+      e = C.getgrgid_r(g, r, c, 1024, rp)
+   end
+   if rp[0] == nil then return nil, strerr(errno()) end
+   return { name = c2str(r.gr_name), gid = tonumber(r.gr_gid), str_array(r.gr_mem) }
+end,
 
 ---
---
---
+-- Get login name
 getlogin     = function() 
-end
+   return retchp(C.getlogin())
+end,
 
 ---
---
---
-getpasswd    = function() 
-end
+-- Password database
+getpasswd    = function(u, f) 
+   local e
+   local c = ffi.new("char[2048]"); 
+   local r = ffi.new("struct passwd")  
+   local rp = ffi.new("struct passwd*[1]", r)  
+   errno(0)
+   if type(u) == 'string' then
+      e = C.getpwnam_r(u, r, c, 2048, rp)
+   elseif type(u) == 'number' then
+      e = C.getpwuid_r(u, r, c, 2048, rp)
+   end
+   if rp[0] == nil then return nil, strerr(errno()) end
+   local ret = { name   = c2str(r.pw_name),
+                 uid    = tonumber(r.pw_uid),
+                 gid    = tonumber(r.pw_gid),
+                 dir    = c2str(r.pw_dir),
+                 shell  = c2str(r.pw_shell),
+                 gecos  = c2str(r.pw_gecos),
+                 passwd = c2str(r.pw_passwd) }
+   return f and ret[f] or ret
+end,
 
 ---
---
---
-getprocessid = function() 
-end
+-- Various process idents
+getprocessid = function(f) 
+   ret = {
+      egid = S.getegid(),
+      euid = S.geteuid(),
+      gid = S.getgid(),
+      uid = S.getuid(),
+      pgrp = S.getpgrp(),
+      pid = S.getpid(),
+      ppid = S.getppid(),
+      sid = S.getsid(0)
+   }
+   return f and ret[f] or ret
+end,
 
 ---
---
---
-kill         = function() 
-end
+-- Send signal to a process
+kill         = S.kill, -- (pid, sig)
 
 ---
---
---
-link         = function() 
-end
+-- Make a hard file link
+link         = S.link, -- (path1, path2)
 
 ---
---
---
-mkdir        = function() 
-end
+-- Make a directory file
+mkdir        = S.mkdir, -- (path, mode)
 
 ---
---
---
-mkfifo       = function() 
-end
+-- Make a fifo file
+mkfifo        = S.mkfifo, -- (path, mode)
 
 ---
---
---
-pathconf     = function() 
-end
+-- Get configurable pathname variables
+pathconf     = function(path, conf) 
+   errno(0)
+   if conf then
+      return S.pathconf(path, S.c.PC[conf:upper()])
+   end
+   ret = {}
+   for _,nm in ipairs { "link_max", "max_canon", "max_input", "name_max", "path_max",
+                        "pipe_buf", "chown_restricted", "no_trunc", "vdisable" } 
+   do ret[nm] = S.pathconf(path, S.c.PC[nm:upper()]) or -1 end
+   return ret
+end,
 
 ---
 --
 --
 putenv       = function() 
-end
+end,
 
 ---
 --
 --
 readlink     = function() 
-end
+end,
 
 ---
 --
 --
 rmdir        = function() 
-end
+end,
 
 ---
 --
 --
 setgid       = function() 
-end
+end,
 
 ---
 --
 --
 setuid       = function() 
-end
+end,
 
 ---
 --
 --
 sleep        = function() 
-end
+end,
 
 ---
 --
 --
 stat         = function() 
-end
+end,
 
 ---
 --
 --
 symlink      = function() 
-end
+end,
 
 ---
 --
 --
 sysconf      = function() 
-end
+end,
 
 ---
 --
 --
 times        = function() 
-end
+end,
 
 ---
 --
 --
 umask        = function() 
-end
+end,
 
 ---
 --
 --
 uname        = function() 
-end
+end,
 
 ---
 --
 --
 unlink       = function() 
-end
+end,
 
 ---
 --
 --
 utime        = function() 
-end
+end,
 
 ---
 --
 --
 wait         = function() 
-end
+end,
 
 ---
 --
 --
 setenv       = function() 
-end
+end,
 
 ---
 --
 --
 unsetenv     = function() 
-end
+end,
 
 ---
 --
 --
 statf        = function() 
-end
+end,
 
 ---
 --
 --
 fstat        = function() 
-end
+end,
 
 ---
 --
 --
 fnmatch      = function() 
-end
+end,
 
 ---
 --
 --
 match        = function() 
-end
+end,
 
 ---
 --
 --
 dup          = function() 
-end
+end,
 
 ---
 --
 --
 read         = function() 
-end
+end,
 
 ---
 --
 --
 write        = function() 
-end
+end,
 
 ---
 --
 --
 close        = function() 
-end
+end,
 
 ---
 --
 --
 waitpid      = function() 
-end
+end,
 
 ---
 --
 --
 pipe         = function() 
-end
+end,
 
 ---
 --
 --
 setsid       = function() 
-end
+end,
 
 ---
 --
 --
 setpgid      = function() 
-end
+end,
 }
 return M
 

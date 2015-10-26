@@ -5,8 +5,6 @@ An adaptor from classic PUC-Rio [lposix](http://webserver2.tecgraf.puc-rio.br/~l
 
 Slap lposix.lua anywhere in your LUA_PATH and make sure [ljsyscall](https://github.com/justincormack/ljsyscall) is installed too.
 
-There is also a lfs (luafilesystem) shortcut to syscall.lfs
-
 As it turns out, this is mostly a matter of connecting the dots. At least there is (a scarce amount
 of) ldoc to look at.
 
