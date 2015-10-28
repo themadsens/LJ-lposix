@@ -7,15 +7,17 @@
  - (C) Copyright 2015 MadsenSoft, madsensoft.dk
 --]]
 
-local ffi   = require "ffi"
-local S     = require "syscall"
-local MODE  = S.c.MODE
-local lfs   = require "syscall.lfs"
-local c2str = ffi.string
-local t     = S.t
-local C     = ffi.C
-local errno = ffi.errno
+local ffi     = require "ffi"
+local bit     = require "bit"
+local S       = require "syscall"
+local MODE    = S.c.MODE
+local lfs     = require "syscall.lfs"
+local c2str   = ffi.string
+local t       = S.t
+local C       = ffi.C
+local errno   = ffi.errno
 local tolower = string.lower
+local band    = bit.band
 
 -- used for char pointer returns, NULL is failure
 local function retchp(ret, err)
@@ -57,14 +59,15 @@ function modechopper(mode)
 
    local mstr = ""
    for _,grp in ipairs { "USR", "GRP", "OTH" } do
-      for _,bit in { "R", "W", "X" } do
-         mstr = mstr..(bit.band(mode, MODE[bit..grp]) ~= 0 and tolower(bit) or "-")
+      for _,bit in ipairs { "R", "W", "X" } do
+         mstr = mstr..(band(mode, MODE[bit..grp]) ~= 0 and tolower(bit) or "-")
       end
    end
    if bit.band(mode, MODE.SUID) ~= 0 then
-      mstr = mstr:sub(1,2)..(bit.band(mode, MODE.XUSR) and "s" or "S")..mstr:sub(4, 9)
+      mstr = mstr:sub(1,2)..(band(mode, MODE.XUSR) and "s" or "S")..mstr:sub(4, 9)
+   end
    if bit.band(mode, MODE.SGID) ~= 0 then
-      mstr = mstr:sub(1,5)..(bit.band(mode, MODE.XGRP) and "s" or "S")..mstr:sub(7, 9)
+      mstr = mstr:sub(1,5)..(band(mode, MODE.XGRP) and "s" or "S")..mstr:sub(7, 9)
    end
    return mstr
 end
@@ -80,8 +83,9 @@ local typemap = {
   other            = "?"
 }
 local function statmap(st, f)
-   local ret = { mode = modechopper(st.mode), type=typemap[st.typename], _mode=st.mode }
-   for _,nm in ipairs { "ino", "dev", "nlink", "uid", "gid", "size", "atime", "mtime", "ctime" } do
+   local ret = { mode = modechopper(st.mode), type=typemap[st.typename],
+                 _mode=st.mode, dev = st.dev.device }
+   for _,nm in ipairs { "ino", "nlink", "uid", "gid", "size", "atime", "mtime", "ctime" } do
       ret[nm] = st[nm]
    end
    return f and ret[f] or ret
