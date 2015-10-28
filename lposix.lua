@@ -9,11 +9,13 @@
 
 local ffi   = require "ffi"
 local S     = require "syscall"
+local MODE  = S.c.MODE
 local lfs   = require "syscall.lfs"
 local c2str = ffi.string
 local t     = S.t
 local C     = ffi.C
 local errno = ffi.errno
+local tolower = string.lower
 
 -- used for char pointer returns, NULL is failure
 local function retchp(ret, err)
@@ -48,6 +50,42 @@ local function str_array(sp, n)
    return c2str(sp[n]), str_array(sp, n+1)
 end
 
+function modechopper(mode)
+   local bitnames = { "R", "W", "X" }
+   local bitout = { "r", "w", "x" }
+   local bitgroups = { "USR", "GRP", "OTH" }
+
+   local mstr = ""
+   for _,grp in ipairs { "USR", "GRP", "OTH" } do
+      for _,bit in { "R", "W", "X" } do
+         mstr = mstr..(bit.band(mode, MODE[bit..grp]) ~= 0 and tolower(bit) or "-")
+      end
+   end
+   if bit.band(mode, MODE.SUID) ~= 0 then
+      mstr = mstr:sub(1,2)..(bit.band(mode, MODE.XUSR) and "s" or "S")..mstr:sub(4, 9)
+   if bit.band(mode, MODE.SGID) ~= 0 then
+      mstr = mstr:sub(1,5)..(bit.band(mode, MODE.XGRP) and "s" or "S")..mstr:sub(7, 9)
+   end
+   return mstr
+end
+
+local typemap = {
+  file             = "regular",
+  directory        = "directory",
+  link             = "link",
+  socket           = "socket",
+  ["char device"]  = "character device",
+  ["block device"] = "block device",
+  ["named pipe"]   = "fifo",
+  other            = "?"
+}
+local function statmap(st, f)
+   local ret = { mode = modechopper(st.mode), type=typemap[st.typename], _mode=st.mode }
+   for _,nm in ipairs { "ino", "dev", "nlink", "uid", "gid", "size", "atime", "mtime", "ctime" } do
+      ret[nm] = st[nm]
+   end
+   return f and ret[f] or ret
+end
 
 ffi.cdef( ffi.os == "OSX" and [[
    struct passwd {
@@ -108,7 +146,9 @@ chdir = S.chdir, -- (path)
 
 ---
 -- Change file modes
-chmod        = S.chmod, -- (path, mode)
+chmod        = function(path, mode)
+   return S.stat(path, mode_munch(S.stat(path).mode))
+end,
 
 ---
 -- Change owner and group of a file
@@ -270,45 +310,47 @@ pathconf     = function(path, conf)
 end,
 
 ---
---
---
-putenv       = function() 
+-- Set environment string
+putenv       = function(s) 
+   return S.setenv(string.match(s, "([^=]+)=(.+)"))
 end,
 
 ---
---
---
-readlink     = function() 
+-- Read value of a symbolic link
+readlink     = S.readlink, -- (path) 
+
+---
+-- Remove a directory file
+rmdir        = S.rmdir, -- (path)
+
+---
+-- Set group id
+setgid       = S.setgid, -- (gid)
+
+---
+-- Set user id
+setuid       = S.setuid, -- (uid)
+
+---
+-- Suspend for an interval in seconds
+sleep        = S.sleep, -- (sec)
+
+---
+-- Get file status
+stat         = function(path, f) 
+   return statmap(S.stat(path), f)
 end,
 
 ---
---
---
-rmdir        = function() 
+-- Get file or symlink status
+lstat        = function(path, f) 
+   return statmap(S.lstat(path), f)
 end,
 
 ---
---
---
-setgid       = function() 
-end,
-
----
---
---
-setuid       = function() 
-end,
-
----
---
---
-sleep        = function() 
-end,
-
----
---
---
-stat         = function() 
+-- Get file of fdesc status
+fstat        = function(fdesc, f) 
+   return statmap(S.fstat(fdesc), f)
 end,
 
 ---
