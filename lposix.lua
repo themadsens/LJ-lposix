@@ -18,6 +18,10 @@ local C       = ffi.C
 local errno   = ffi.errno
 local tolower = string.lower
 local band    = bit.band
+local osx     = ffi.os == "OSX"
+
+-- Set tostring to work
+local function num(t) return tonumber(tostring(t)) end
 
 -- used for char pointer returns, NULL is failure
 local function retchp(ret, err)
@@ -105,6 +109,10 @@ ffi.cdef( ffi.os == "OSX" and [[
        time_t  pw_expire;      /* account expiration */
        int     pw_fields;      /* internal: fields filled in */
     };
+    enum const {
+       utslen=256,
+    };
+
 ]] or [[
    struct passwd {
        char    *pw_name;       /* user name */
@@ -114,6 +122,9 @@ ffi.cdef( ffi.os == "OSX" and [[
        char    *pw_gecos;      /* Honeywell login info */
        char    *pw_dir;        /* home directory */
        char    *pw_shell;      /* default shell */
+    };
+    enum const {
+       utslen=65,
     };
 ]])
 
@@ -135,6 +146,17 @@ ffi.cdef [[
     int getpwnam_r(const char *name, struct passwd *pwd, char *buffer, size_t bufsize, struct passwd **result);
     int getpwuid_r(uid_t uid, struct passwd *pwd, char *buffer, size_t bufsize, struct passwd **result);
 
+    int sysconf(int);
+
+
+    struct	utsname {
+        char	sysname[utslen];
+        char	nodename[utslen];
+        char	release[utslen];
+        char	version[utslen];
+        char	machine[utslen];
+    };
+    int uname(struct utsname *);
 ]]
 
 local M
@@ -151,7 +173,7 @@ chdir = S.chdir, -- (path)
 ---
 -- Change file modes
 chmod        = function(path, mode)
-   return S.stat(path, mode_munch(S.stat(path).mode))
+   return S.chmod(path, mode_munch(S.stat(path).mode))
 end,
 
 ---
@@ -329,7 +351,7 @@ rmdir        = S.rmdir, -- (path)
 
 ---
 -- Set group id
-setgid       = S.setgid, -- (gid)
+setgid       = S.setgid, -- (gid),t
 
 ---
 -- Set user id
@@ -358,85 +380,111 @@ fstat        = function(fdesc, f)
 end,
 
 ---
---
---
-symlink      = function() 
+-- Make symbolic link to a file
+symlink      = S.symlink, -- (path1, path2)
+
+---
+-- Get configurable system variables
+sysconf      = function(f) 
+   local t,i = {0, 1, 2, 3, 4, 7, 8, 29, 5, 6}, 0 -- glibc
+   if ffi.os == "OSX" then
+      t = {1, 2, 3, 4, 5, 6, 7, 8, 26, 27} -- OSX yosemite
+   end
+   local function n() i=i+1 return t[i] end
+   local ret = {
+      arg_max          = C.sysconf(n()), -- _SC_ARG_MAX
+      child_max        = C.sysconf(n()), -- _SC_CHILD_MAX
+      clk_tck          = C.sysconf(n()), -- _SC_CLK_TCK
+      ngroups_max      = C.sysconf(n()), -- _SC_NGROUPS_MAX
+      open_max         = C.sysconf(n()), -- _SC_OPEN_MAX
+      job_control      = C.sysconf(n()), -- _SC_JOB_CONTROL
+      saved_ids        = C.sysconf(n()), -- _SC_SAVED_IDS
+      version          = C.sysconf(n()), -- _SC_VERSION
+      stream_max       = C.sysconf(n()), -- _SC_STREAM_MAX
+      tzname_max       = C.sysconf(n()), -- _SC_TZNAME_MAX
+   }
+   return f and ret[f] or ret
 end,
 
 ---
---
---
-sysconf      = function() 
-end,
-
----
---
---
+-- Process times
 times        = function() 
+   local slf,cld,tck = S.getrusage(0), S.getrusage(-1), C.sysconf(osx and 3 or 2)
+   local ret = {
+      elapsed = num(S.gettimeofday()) * tck,
+      utime   = num(slf.utime) * tck,
+      stime   = num(slf.stime) * tck,
+      cutime  = (num(slf.utime)+num(cld.utime)) * tck,
+      cstime  = (num(slf.stime)+num(cld.stime)) * tck
+   }
+   return f and ret[f] or ret
 end,
 
 ---
---
---
-umask        = function() 
+-- Set file creation mode mask
+umask        = function(mask)
+   local new = S.umask(0); S.umask(new)
+   new = t.band(bit.bnot(new), 0x1ff)
+   if mask then
+      new = bit.band(mode_munch(new, mask), 0x1ff)
+      if not new then return nil end
+      S.umask(bit.bnot(new))
+   end
+   return modechopper(new)
 end,
 
 ---
---
---
-uname        = function() 
+-- Get system identification
+uname        = function(s) 
+   local ut = ffi.new("struct utsname[1]")
+   local e = C.uname(ut[0])
+   s = s or "%s %n %r %v %m"
+   return s:gsub("%%([mnrsv%%])", {
+      ["%"] = "%",
+      m = c2str(ut[0].machine),
+      n = c2str(ut[0].nodename),
+      r = c2str(ut[0].release),
+      s = c2str(ut[0].sysname),
+      v = c2str(ut[0].version),
+   })
+
 end,
 
 ---
---
---
-unlink       = function() 
+-- Remove directory entry
+unlink       = S.unlink, -- (path)
+
+---
+-- Set file times
+utime        = function( path, mtime, atime) 
+   if mtime and atime then
+      return S.utimes(path, {atime, mtime})
+   end
+   return S.utimes(path)
 end,
 
 ---
---
---
-utime        = function() 
+-- Wait for process termination
+wait         = function(pid) 
+   return retbool(S.waitpid(pid))
 end,
 
 ---
---
---
-wait         = function() 
-end,
+-- Set environmant variable
+setenv       = S.setenv, -- (name, value)
 
 ---
---
---
-setenv       = function() 
-end,
+-- Unset environmant variable
+unsetenv     = S.unsetenv, -- (name)
+
+-- These are my non "standard" additions
 
 ---
---
---
-unsetenv     = function() 
-end,
-
----
---
---
-statf        = function() 
-end,
-
----
---
---
-fstat        = function() 
-end,
-
----
---
---
+-- Test whether a filename or pathname matches a shell-style pattern
 fnmatch      = function() 
 end,
 
 ---
---
 --
 match        = function() 
 end,
@@ -489,6 +537,7 @@ end,
 setpgid      = function() 
 end,
 }
+_G.posix = M
 return M
 
 -- vim: set sw=3 sts=3 et:
