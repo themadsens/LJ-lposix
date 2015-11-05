@@ -157,6 +157,13 @@ ffi.cdef [[
         char	machine[utslen];
     };
     int uname(struct utsname *);
+
+    enum {
+      FNM_NOESCAPE = 0x01,	/* Disable backslash escaping. */
+      FNM_PATHNAME = 0x02,	/* Slash must be matched by slash. */
+      FNM_PERIOD = 0x04,	/* Period must be matched by period. */
+    };
+    int fnmatch(const char *pattern, const char *string, int flags);
 ]]
 
 local M
@@ -481,61 +488,84 @@ unsetenv     = S.unsetenv, -- (name)
 
 ---
 -- Test whether a filename or pathname matches a shell-style pattern
-fnmatch      = function() 
+fnmatch      = function(pattern, path) 
+   return C.fnmatch(pattern, path, C.FNM_PERIOD+C.FNM_PATHNAME) == 0
 end,
 
 ---
---
-match        = function() 
+-- Test whether a string matches a shell-style pattern
+match        = function(pattern, path) 
+   return C.fnmatch(pattern, path, 0) == 0
 end,
 
 ---
---
---
-dup          = function() 
+-- Duplicate an existing file descriptor
+dup          = function(fd, fd2)
+   if fd2 then
+      return retnum(C.dup2(fd, fd2))
+   else
+      return retnum(C.dup(fd))
+   end
 end,
 
 ---
---
---
-read         = function() 
+-- Read from fd
+read         = function(fd, count, buf) 
+   return S.read(S.t.fd(fd), buf, count)
 end,
 
 ---
---
---
-write        = function() 
+-- Write to fd
+write        = function(fd, buf, count) 
+   return S.write(S.t.fd(fd), buf, count)
 end,
 
 ---
---
---
-close        = function() 
+-- Close an fd
+close        = function(fd) 
+   return retbool(C.close(fd))
 end,
 
 ---
---
---
-waitpid      = function() 
+-- Wait for process termination
+waitpid      = function(pid, flags, f) 
+   local r,err,st = S.waitpid(pid or 0, flags and table.join(flags, ",") or "nohang")
+   if r == nil then return nil, err end
+   function codenm(st) 
+      for _,s in pairs { "exited", "stopped", "killed", "continued" } do
+         if st[s] then return s end
+      end
+      return "<unknown>"
+   end
+   local ret = {
+      pid = r,
+      signo = st.TERMSIG or -1,
+      status = st.EXITSTATUS or -1,
+      code = codenm(st)
+   }
+   return f and ret[f] or ret
 end,
 
 ---
---
---
-pipe         = function() 
+-- Create descriptor pair for interprocess communication
+pipe         = function(sp) 
+   local r,e,f1,f2
+   if sp and sp ~= 0 then
+      r,e,f1,f2 = S.socketpair("LOCAL", "STREAM", 0)
+   else
+      r,e,f1,f2 = S.pipe()
+   end
+   if not r then return nil, e end
+   return f1:getfd(), f2:getfd()
 end,
 
 ---
---
---
-setsid       = function() 
-end,
+-- Create session and set process group ID
+setsid       = S.setsid, -- ()
 
 ---
---
---
-setpgid      = function() 
-end,
+-- Set process group
+setpgid      = S.setpgid, -- (pid, pgid)
 }
 _G.posix = M
 return M
