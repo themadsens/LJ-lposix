@@ -1,5 +1,3 @@
-# WIP WIP Nothing to see here yet ..
-
 # LJIT-lposix
 An adaptor from classic PUC-Rio [lposix](http://webserver2.tecgraf.puc-rio.br/~lhf/ftp/lua/#lposix) to ljsyscall
 
