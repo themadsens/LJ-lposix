@@ -18,7 +18,10 @@ local C       = ffi.C
 local errno   = ffi.errno
 local tolower = string.lower
 local band    = bit.band
+local bor     = bit.bor
+local bnot    = bit.bnot
 local osx     = ffi.os == "OSX"
+local strerr  = S.t.error
 
 -- Set tostring to work
 local function num(t) return tonumber(tostring(t)) end
@@ -56,10 +59,7 @@ local function str_array(sp, n)
    return c2str(sp[n]), str_array(sp, n+1)
 end
 
-function modechopper(mode)
-   local bitnames = { "R", "W", "X" }
-   local bitout = { "r", "w", "x" }
-   local bitgroups = { "USR", "GRP", "OTH" }
+local function modechopper(mode)
 
    local mstr = ""
    for _,grp in ipairs { "USR", "GRP", "OTH" } do
@@ -68,12 +68,68 @@ function modechopper(mode)
       end
    end
    if bit.band(mode, MODE.SUID) ~= 0 then
-      mstr = mstr:sub(1,2)..(band(mode, MODE.XUSR) and "s" or "S")..mstr:sub(4, 9)
+      mstr = mstr:sub(1,2)..(band(mode, MODE.XUSR)~=0 and "s" or "S")..mstr:sub(4, 9)
    end
    if bit.band(mode, MODE.SGID) ~= 0 then
-      mstr = mstr:sub(1,5)..(band(mode, MODE.XGRP) and "s" or "S")..mstr:sub(7, 9)
+      mstr = mstr:sub(1,5)..(band(mode, MODE.XGRP)~=0 and "s" or "S")..mstr:sub(7, 9)
+   end
+   if bit.band(mode, MODE.STXT) ~= 0 then
+      mstr = mstr:sub(1,8)..(band(mode, MODE.XOTH)~=0 and "t" or "T")
    end
    return mstr
+end
+
+local function mode_munch(mode, spec)
+   if spec:match("^[r-]") and #spec == 9 then
+      mode = 0
+      local ch
+      for _,grp in ipairs { "USR", "GRP", "OTH" } do
+         for _,bit in ipairs { "R", "W", "X" } do
+            ch, spec = spec:match("(.)(.*)")
+            if MODE[bit..grp] ~= 0 and ch ~= '-' then
+               if tolower(bit) == tolower(ch) or ch == 's' or ch == 't' then
+                  mode = bor(mode, MODE[bit..grp])
+               elseif bit..grp == "WUSR" and tolower(ch) == 's' then
+                  mode = bor(mode, MODE[SUID])
+               elseif bit..grp == "WGRP" and tolower(ch) == 's' then
+                  mode = bor(mode, MODE[SGID])
+               elseif bit..grp == "WOTH" and tolower(ch) == 't' then
+                  mode = bor(mode, MODE[STXT])
+               end
+            end
+         end
+      end
+      return mode
+   end
+   --               04700    02070    01007    07777    07000
+   local cmap = { u=0x9c0, g=0x438, o=0x207, a=0xfff, s=0xe00}
+   --               06000    00444    00222    00111    01000
+   local bmap = { s=0xc00, r=0x124, w=0x092, x=0x049, t=0x200 }
+   --
+   local  ugoa, op, rwxst = spec:match("^([ugosa]*)([=+-])([rwxst]*)$")
+   local affect, mask = 0, 0
+   if not rwxst then
+      return 0
+   end
+   for c in ugoa:gmatch(".") do
+      affect = bor(affect, cmap[c])
+   end
+   for c in rwxst:gmatch(".") do
+      mask = bor(mask, bmap[c])
+   end
+   if op == "=" then
+      mode = band(affect, mask)
+   elseif op == "+" then
+      mode = bor(mode, band(affect, mask))
+   elseif op == "-" then
+      mode = band(mode, bnot(band(affect, mask)))
+   end
+   return mode
+end
+
+local function test_munch(mode, spec)
+   local omode = mode_munch(mode, spec)
+   return omode, modechopper(mode), modechopper(omode)
 end
 
 local typemap = {
@@ -131,7 +187,7 @@ ffi.cdef( ffi.os == "OSX" and [[
 ffi.cdef [[
    char * ttyname(int fildes);
 
-   int execvp(const char *file, char *const argv[]);
+   int execvp(const char *file, const char *argv[]);
 
    struct group {
       char    *gr_name;
@@ -180,7 +236,7 @@ chdir = S.chdir, -- (path)
 ---
 -- Change file modes
 chmod        = function(path, mode)
-   return S.chmod(path, mode_munch(S.stat(path).mode))
+   return S.chmod(path, mode_munch(S.stat(path).mode, mode))
 end,
 
 ---
@@ -227,14 +283,14 @@ exec         = function(path, arg1, ...)
    assert(type(path) == "string")
    local a
    if type(arg1) == 'table' then
-      a = tnew {path, expand(arg1)}
+      a = tnew {path, unpack(arg1)}
    else
       a = tnew {path, arg1, ...}
    end
    for _,s in ipairs(a) do assert(type(s) == 'string') end
    local cargv = t.string_array(#a + 1, a or {})
    cargv[#a] = nil -- LuaJIT does not zero rest of a VLA
-   return retbool(C.execve(filename, cargv, cenvp))
+   return retbool(C.execvp(path, cargv))
 end,
 
 ---
@@ -247,7 +303,12 @@ getcwd       = lfs.currentdir, -- ()
 
 ---
 -- Get environment variable
-getenv       = S.getenv, -- (var)
+getenv       = function(var)
+   if not var then
+      return S.environ()
+   end
+   return S.getenv(var)
+end,
 
 ---
 -- Group database operations
@@ -284,6 +345,8 @@ getpasswd    = function(u, f)
       e = C.getpwnam_r(u, r, c, 2048, rp)
    elseif type(u) == 'number' then
       e = C.getpwuid_r(u, r, c, 2048, rp)
+   else
+      e = C.getpwuid_r(S.getuid(), r, c, 2048, rp)
    end
    if rp[0] == nil then return nil, strerr(errno()) end
    local ret = { name   = c2str(r.pw_name),
@@ -366,7 +429,10 @@ setuid       = S.setuid, -- (uid)
 
 ---
 -- Suspend for an interval in seconds
-sleep        = S.sleep, -- (sec)
+sleep        = function(sec)
+   S.select({}, sec)
+   return true
+end,
 
 ---
 -- Get file status
@@ -431,7 +497,7 @@ end,
 -- Set file creation mode mask
 umask        = function(mask)
    local new = S.umask(0); S.umask(new)
-   new = t.band(bit.bnot(new), 0x1ff)
+   new = bit.band(bit.bnot(new), 0x1ff)
    if mask then
       new = bit.band(mode_munch(new, mask), 0x1ff)
       if not new then return nil end
@@ -567,6 +633,8 @@ setsid       = S.setsid, -- ()
 -- Set process group
 setpgid      = S.setpgid, -- (pid, pgid)
 }
+M.version = "LJIT-lposix version 0.99 -- https://github.com/themadsens/LJIT-lposix"
+M.test_munch = test_munch
 _G.posix = M
 return M
 

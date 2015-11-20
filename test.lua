@@ -15,9 +15,10 @@ function myprint(s,...)
   io.write(arg[i],s)
  end
  io.write"\n"
+ io.stdout:flush()
 end
 
-ox=posix
+ox=loadfile("lposix.lua")()
 
 ------------------------------------------------------------------------------
 print(ox.version)
@@ -41,7 +42,7 @@ f"USER"
 f"HOME"
 f"SHELL"
 f"absent"
-for k in ox.getenv() do io.write(k,"\t") end io.write"\n"
+for k in pairs(ox.getenv()) do io.write(k,"\t") end io.write"\n"
 
 ------------------------------------------------------------------------------
 testing"putenv"
@@ -73,20 +74,20 @@ f(d)
 myassert("rmdir",ox.rmdir"x")
 
 ------------------------------------------------------------------------------
-testing"fork, exec"
+testing"fork, exec, write"
 io.flush()
 pid=assert(ox.fork())
 if pid==0 then
 	pid=ox.getprocessid"pid"
 	ppid=ox.getprocessid"ppid"
-	io.write("in child process ",pid," from ",ppid,".\nnow executing date... ")
+	ox.write(1, "in child process "..pid.." from "..ppid..".\nnow executing date... ")
 	io.flush()
 	assert(ox.exec("date","+[%c]"))
 	print"should not get here"
 else
-	io.write("process ",ox.getprocessid"pid"," forked child process ",pid,". waiting...\n")
+	ox.write(1, "process "..ox.getprocessid"pid".." forked child process "..pid..". waiting...\n")
 	ox.wait(pid)
-	io.write("child process ",pid," done\n")
+	ox.write(1, "child process "..pid.." done\n")
 end
 
 ------------------------------------------------------------------------------
@@ -156,6 +157,7 @@ function f(x)
    myprint(":",a.name,a.passwd,a.uid,a.gid,a.gecos,a.dir,a.shell)
  end
 end
+io.stdout:flush()
 
 f()
 f(ox.getenv"USER")
@@ -169,25 +171,29 @@ f()
 f(nil)
 ox.putenv"USER=root"
 f(ox.getenv"USER")
+io.stdout:flush()
 
 ------------------------------------------------------------------------------
 testing"sysconf"
 a=ox.sysconf() table.foreach(a,print)
 testing"pathconf"
 a=ox.pathconf(".") table.foreach(a,print)
+io.stdout:flush()
 
 ------------------------------------------------------------------------------
 testing"times"
 a=ox.times()
-for k,v in a do print(k,v) end
-print"sleeping 10 seconds..."
-ox.sleep(10)
+for k,v in pairs(a) do print(k,v) end
+print"sleeping 1.5 seconds..."
+ox.sleep(1.5)
 b=ox.times()
-for k,v in b do print(k,v) end
+for k,v in ipairs(b) do print(k,v) end
 print""
 print("elapsed",b.elapsed-a.elapsed)
 print("clock",os.clock())
+io.stdout:flush()
 
 ------------------------------------------------------------------------------
-print""
+print"VERSION"
 print(ox.version)
+io.stdout:flush()
